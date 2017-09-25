@@ -32,6 +32,19 @@ def wechat_entry():
     if ctx['post_type'] == 'receive_message' \
             and ctx['type'] == 'friend_message':
         handle_friend_message(ctx)
+    elif ctx['post_type'] == 'event' \
+            and 'INTERCOM_BOT_USER_ID' in app.config:
+        if ctx['event'] == 'input_qrcode':
+            qrcode_url = ctx['params'][-1]
+            reply_or_initiate(
+                user_id=app.config['INTERCOM_BOT_USER_ID'],
+                body='微信号掉线了，扫二维码登录：%s' % qrcode_url
+            )
+        elif ctx['event'] == 'login':
+            reply_or_initiate(
+                user_id=app.config['INTERCOM_BOT_USER_ID'],
+                body='微信号登录成功，开始等待客人了～'
+            )
     return '', 204
 
 
@@ -69,23 +82,10 @@ def handle_friend_message(ctx):
                 and ctx.get('media_mime', '').startswith('image'):
             image_url = upload_image(base64.b64decode(ctx['media_data']))
 
-        payload = {
-            'type': 'user',
-            'message_type': 'comment',
-            'user_id': user_id,
-            'body': ctx['content']
-        }
+        body = ctx['content']
         if image_url:
-            payload['body'] = '[图片](%s)' % image_url
-        resp = session.post(api('conversations/last/reply'), json=payload)
-        if not resp.ok and resp.status_code == 422:
-            session.post(api('messages'), json={
-                'from': {
-                    'type': 'user',
-                    'user_id': user_id
-                },
-                'body': payload['body']
-            })
+            body = '[图片](%s)' % image_url
+        reply_or_initiate(user_id, body)
 
 
 @app.route('/intercom', methods=['POST'])
@@ -131,6 +131,25 @@ def handle_conversation_closed(ctx):
     session.delete(api('users'), params={
         'user_id': user_id
     })
+
+
+def reply_or_initiate(user_id, body, payload=None):
+    if payload is None:
+        payload = {
+            'type': 'user',
+            'message_type': 'comment',
+            'user_id': user_id,
+            'body': body
+        }
+    resp = session.post(api('conversations/last/reply'), json=payload)
+    if not resp.ok and resp.status_code == 422:
+        session.post(api('messages'), json={
+            'from': {
+                'type': 'user',
+                'user_id': payload['user_id']
+            },
+            'body': payload['body']
+        })
 
 
 if __name__ == '__main__':
