@@ -1,0 +1,5 @@
+HOST = '127.0.0.1'
+PORT = 9000
+WECHAT_API_BASE_URL = 'http://127.0.0.1:3000/openwx'
+INTERCOM_ACCESS_TOKEN = '<access-token>'
+INTERCOM_WEBHOOK_SECRET = '<secret>'
