@@ -10,8 +10,8 @@ from urllib.parse import (
 from flask import Flask, request, g
 from requests import Session
 
-from wechat_intercom.wechat import WeChat
-from wechat_intercom.utils import upload_image, remove_tags
+from wechat import WeChat
+from utils import upload_image, remove_tags
 
 app = Flask(__name__)
 app.config.from_object(os.getenv('FLASK_SETTINGS', 'settings'))
