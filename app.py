@@ -175,7 +175,7 @@ def handle_admin_commands(bot_id, command):
                 # failed
                 reply_or_initiate(
                     user_id=bot_id,
-                    body='%s 上线失败'
+                    body='%s 上线失败' % wechat_client
                 )
             elif resp.json()['status'] == 'client already exists':
                 reply_or_initiate(
