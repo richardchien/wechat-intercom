@@ -1,17 +1,17 @@
-import os
-import re
 import base64
 import hmac
+import os
+import re
 from urllib.parse import (
     quote as urlencode,
     unquote as urldecode
 )
 
-from requests import Session
 from flask import Flask, request, g
+from requests import Session
 
-from wechat import WeChat
-from utils import upload_image, remove_tags
+from wechat_intercom.wechat import WeChat
+from wechat_intercom.utils import upload_image, remove_tags
 
 app = Flask(__name__)
 app.config.from_object(os.getenv('FLASK_SETTINGS', 'settings'))
@@ -224,4 +224,15 @@ def reply_or_initiate(user_id, body, payload=None):
 
 
 if __name__ == '__main__':
-    app.run(host=app.config['HOST'], port=app.config['PORT'])
+    try:
+        from gevent.wsgi import WSGIServer
+        has_gevent = True
+    except ImportError:
+        has_gevent = False
+
+    if not app.debug and has_gevent:
+        http_server = WSGIServer(
+            (app.config['HOST'], app.config['PORT']), app)
+        http_server.serve_forever()
+    else:
+        app.run(host=app.config['HOST'], port=app.config['PORT'])
