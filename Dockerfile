@@ -8,6 +8,6 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 RUN pip install gevent
 
-COPY wechat_intercom ./wechat_intercom
+COPY *.py ./
 
-CMD python wechat_intercom/app.py
+CMD python app.py
