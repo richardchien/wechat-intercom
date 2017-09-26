@@ -2,9 +2,13 @@ import os
 import re
 import base64
 import hmac
+from urllib.parse import (
+    quote as urlencode,
+    unquote as urldecode
+)
 
 from requests import Session
-from flask import Flask, request
+from flask import Flask, request, g
 
 from wechat import WeChat
 from utils import upload_image, remove_tags
@@ -13,6 +17,7 @@ app = Flask(__name__)
 app.config.from_object(os.getenv('FLASK_SETTINGS', 'settings'))
 
 session = Session()
+session.trust_env = False
 session.headers.update({
     'Authorization': 'Bearer ' + app.config['INTERCOM_ACCESS_TOKEN'],
     'Accept': 'application/json',
@@ -29,6 +34,13 @@ def api(path):
 @app.route('/wechat', methods=['POST'])
 def wechat_entry():
     ctx = request.json
+
+    wechat_client = 'default'
+    if 'client' in request.args:
+        wechat_client = urldecode(request.args['client'])
+    g.wechat_client = wechat_client
+    g.wechat_client_encoded = urlencode(wechat_client)
+
     if ctx['post_type'] == 'receive_message' \
             and ctx['type'] == 'friend_message':
         handle_friend_message(ctx)
@@ -38,54 +50,56 @@ def wechat_entry():
             qrcode_url = ctx['params'][-1]
             reply_or_initiate(
                 user_id=app.config['INTERCOM_BOT_USER_ID'],
-                body='微信号掉线了，扫二维码登录：%s' % qrcode_url
+                body='%s 登录二维码：%s' % (g.wechat_client, qrcode_url)
             )
         elif ctx['event'] == 'login':
             reply_or_initiate(
                 user_id=app.config['INTERCOM_BOT_USER_ID'],
-                body='微信号登录成功，开始等待客人了～'
+                body='%s 登录成功，开始等待客人了～' % g.wechat_client
             )
     return '', 204
 
 
 def handle_friend_message(ctx):
-    user_id = ctx.get('sender_id')
-    if not user_id:
+    wechat_id = ctx.get('sender_id')
+    if not wechat_id:
         return
 
-    if user_id:
-        avatar_url = None
-        resp = wechat.get_avatar.get(params={
-            'id': user_id
-        }, stream=True)
-        if resp.ok:
-            avatar_url = upload_image(resp.raw)
+    user_id = '/'.join(('wechat', g.wechat_client, wechat_id))
 
-        payload = {
-            'user_id': user_id
+    avatar_url = None
+    resp = wechat.get_avatar.get(params={
+        'client': g.wechat_client_encoded,
+        'id': wechat_id
+    }, stream=True)
+    if resp.ok:
+        avatar_url = upload_image(resp.raw)
+
+    payload = {
+        'user_id': user_id
+    }
+    if 'sender_name' in ctx:
+        payload['name'] = g.wechat_client + ': ' + ctx['sender_name']
+    if avatar_url:
+        payload['avatar'] = {
+            'type': 'avatar',
+            'image_url': avatar_url
         }
-        if 'sender_name' in ctx:
-            payload['name'] = ctx['sender_name']
-        if avatar_url:
-            payload['avatar'] = {
-                'type': 'avatar',
-                'image_url': avatar_url
-            }
 
-        resp = session.post(api('users'), json=payload)
+    resp = session.post(api('users'), json=payload)
 
-        if not resp.ok:
-            return
+    if not resp.ok:
+        return
 
-        image_url = None
-        if ctx.get('format') == 'media' \
-                and ctx.get('media_mime', '').startswith('image'):
-            image_url = upload_image(base64.b64decode(ctx['media_data']))
+    image_url = None
+    if ctx.get('format') == 'media' \
+            and ctx.get('media_mime', '').startswith('image'):
+        image_url = upload_image(base64.b64decode(ctx['media_data']))
 
-        body = ctx['content']
-        if image_url:
-            body = '[图片](%s)' % image_url
-        reply_or_initiate(user_id, body)
+    body = ctx['content']
+    if image_url:
+        body = '[图片](%s)' % image_url
+    reply_or_initiate(user_id, body)
 
 
 @app.route('/intercom', methods=['POST'])
@@ -110,27 +124,84 @@ def intercom_entry():
 
 def handle_conversation_replied(ctx):
     user_id = ctx['data']['item']['user']['user_id']
+    user_id_parts = user_id.split('/')
+
     message = ctx['data']['item'][
         'conversation_parts']['conversation_parts'][0]
-
     image_urls = [
         m.group(1)
         for m in re.finditer(r'<\s*img\s+src="(http.+?)"\s*>', message['body'])
     ]
 
-    for url in image_urls:
-        wechat.send_friend_message(id=user_id,
-                                   media_path=url)
-
-    wechat.send_friend_message(id=user_id,
-                               content=remove_tags(message['body']).strip())
+    if user_id_parts[0] == 'wechat':
+        wechat_client, wechat_id = user_id_parts[1:]
+        wechat_client_encoded = urlencode(wechat_client)
+        for url in image_urls:
+            wechat.send_friend_message(
+                client=wechat_client_encoded,
+                id=wechat_id,
+                media_path=url
+            )
+        wechat.send_friend_message(
+            client=wechat_client_encoded,
+            id=wechat_id,
+            content=remove_tags(message['body']).strip()
+        )
+    elif 'INTERCOM_BOT_USER_ID' in app.config \
+            and user_id == app.config['INTERCOM_BOT_USER_ID']:
+        handle_admin_commands(app.config['INTERCOM_BOT_USER_ID'],
+                              remove_tags(message['body']).strip())
 
 
 def handle_conversation_closed(ctx):
     user_id = ctx['data']['item']['user']['user_id']
-    session.delete(api('users'), params={
-        'user_id': user_id
-    })
+    if user_id.startswith('wechat/'):
+        session.delete(api('users'), params={
+            'user_id': user_id
+        })
+
+
+def handle_admin_commands(bot_id, command):
+    cmd, *args = command.split()
+    if cmd in ('上线', '下线'):
+        wechat_client = 'default'
+        if args:
+            wechat_client = args[0]
+        wechat_client_encoded = urlencode(wechat_client)
+
+        if cmd == '上线':
+            resp = wechat.start_client(client=wechat_client_encoded)
+            if not resp.ok or resp.json()['code'] != 0:
+                # failed
+                reply_or_initiate(
+                    user_id=bot_id,
+                    body='%s 上线失败'
+                )
+            elif resp.json()['status'] == 'client already exists':
+                reply_or_initiate(
+                    user_id=bot_id,
+                    body='%s 已在线上（有可能正在等待扫码登录）' % wechat_client
+                )
+        elif cmd == '下线':
+            resp = wechat.stop_client(client=wechat_client_encoded)
+            if not resp.ok or resp.json()['code'] != 0:
+                reply_or_initiate(
+                    user_id=bot_id,
+                    body='%s 下线失败（可能当前不在线上）' % wechat_client
+                )
+            elif resp.json()['status'] == 'success':
+                reply_or_initiate(
+                    user_id=bot_id,
+                    body='%s 已下线' % wechat_client
+                )
+    elif cmd == '查看':
+        resp = wechat.check_client()
+        if resp.ok and resp.json()['code'] == 0:
+            reply_or_initiate(
+                user_id=bot_id,
+                body='\n'.join([urldecode(x['account']) + ': ' + x['state']
+                                for x in resp.json()['client']])
+            )
 
 
 def reply_or_initiate(user_id, body, payload=None):
